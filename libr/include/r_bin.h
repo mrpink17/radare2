@@ -17,10 +17,11 @@ extern "C" {
 
 R_LIB_VERSION_HEADER (r_bin);
 
-#define R_BIN_SCN_EXECUTABLE 0x1
-#define R_BIN_SCN_WRITABLE   0x2
-#define R_BIN_SCN_READABLE   0x4
-#define R_BIN_SCN_SHAREABLE  0x8
+#define R_BIN_SCN_EXECUTABLE (1 << 0)
+#define R_BIN_SCN_WRITABLE   (1 << 1)
+#define R_BIN_SCN_READABLE   (1 << 2)
+#define R_BIN_SCN_SHAREABLE  (1 << 3)
+#define R_BIN_SCN_MAP        (1 << 4)
 
 #define R_BIN_DBG_STRIPPED 0x01
 #define R_BIN_DBG_STATIC   0x02
@@ -118,6 +119,7 @@ typedef struct r_bin_info_t {
 typedef struct r_bin_object_t {
 	ut32 id;
 	ut64 baddr;
+	ut64 baddr_shift;
 	ut64 loadaddr;
 	ut64 boffset;
 	int size;
@@ -392,6 +394,10 @@ R_API int r_bin_xtr_add(RBin *bin, RBinXtrPlugin *foo);
 R_API void* r_bin_free(RBin *bin);
 R_API int r_bin_load_languages(RBinFile *binfile);
 R_API int r_bin_dump_strings(RBinFile *a, int min);
+//io-wrappers
+R_API int r_bin_read_at (RBin *bin, ut64 addr, ut8 *buf, int size);
+R_API int r_bin_write_at (RBin *bin, ut64 addr, const ut8 *buf, int size);
+
 // ref
 R_API int r_bin_file_deref_by_bind (RBinBind * binb);
 R_API int r_bin_file_deref (RBin *bin, RBinFile * a);
@@ -399,6 +405,7 @@ R_API int r_bin_file_ref_by_bind (RBinBind * binb);
 R_API int r_bin_file_ref (RBin *bin, RBinFile * a);
 R_API int r_bin_list(RBin *bin);
 R_API RBinObject *r_bin_get_object(RBin *bin);
+R_API ut64 r_binfile_get_baddr (RBinFile *binfile);
 R_API ut64 r_bin_get_baddr(RBin *bin);
 R_API void r_bin_set_baddr(RBin *bin, ut64 baddr);
 R_API ut64 r_bin_get_boffset(RBin *bin);
@@ -461,7 +468,8 @@ R_API void r_bin_list_archs(RBin *bin, int mode);
 R_API void r_bin_set_user_ptr(RBin *bin, void *user);
 R_API RBuffer *r_bin_create (RBin *bin, const ut8 *code, int codelen, const ut8 *data, int datalen);
 R_API ut64 r_bin_get_offset (RBin *bin);
-R_API ut64 r_bin_get_vaddr (RBin *bin, ut64 baddr, ut64 paddr, ut64 vaddr);
+R_API ut64 r_bin_get_vaddr (RBin *bin, ut64 paddr, ut64 vaddr);
+R_API ut64 r_bin_a2b (RBin *bin, ut64 addr);
 R_API int r_bin_file_delete(RBin *bin, ut32 bin_fd);
 R_API int r_bin_file_delete_all(RBin *bin);
 R_API int r_bin_file_set_cur_by_fd (RBin *bin, ut32 bin_fd);

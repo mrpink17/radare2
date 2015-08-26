@@ -669,6 +669,54 @@ static int dump_maps(RCore *core, int perm, const char *filename) {
 	return ret;
 }
 
+static void cmd_debug_modules(RCore *core, int mode) { // "dmm"
+	ut64 addr = core->offset;
+	RDebugMap *map;
+	RList *list;
+	RListIter *iter;
+
+	if (mode == '?') {
+		eprintf ("Usage: dmm[j*]\n");
+		return;
+	}
+	if (mode == 'j') {
+		r_cons_printf ("[");
+	}
+	// TODO: honor mode
+	list = r_debug_modules_list (core->dbg);
+	r_list_foreach (list, iter, map) {
+		switch (mode) {
+		case '.':
+			if (addr >= map->addr && addr < map->addr_end) {
+				r_cons_printf ("0x%08"PFMT64x" %s\n",
+					map->addr, map->file);
+				goto beach;
+			}
+			break;
+		case 'j':
+			r_cons_printf ("{\"address\":%"PFMT64d",\"file\":\"%s\"}%s",
+				map->addr, map->file, iter->n?",":"");
+			break;
+		case '*':
+			{
+				char *fn = strdup (map->file);
+				r_name_filter (fn, 0);
+				r_cons_printf ("f mod.%s = 0x%08"PFMT64x"\n",
+					fn, map->addr);
+				free (fn);
+			}
+			break;
+		default:
+			r_cons_printf ("0x%08"PFMT64x" %s\n", map->addr, map->file);
+		}
+	}
+beach:
+	if (mode == 'j') {
+		r_cons_printf ("]\n");
+	}
+	r_list_free (list);
+}
+
 static int cmd_debug_map(RCore *core, const char *input) {
 	const char* help_msg[] = {
 		"Usage:", "dm", " # Memory maps commands",
@@ -682,6 +730,7 @@ static int cmd_debug_map(RCore *core, const char *input) {
 		"dmi*", " [addr|libname] [symname]", "List symbols of target lib in radare commands",
 		"dmj", "", "List memmaps in JSON format",
 		"dml", " <file>", "Load contents of file into the current map region (see Sl)",
+		"dmm", "[j*]", "List modules (libraries, binaries loaded in memory)",
 		"dmp", " <address> <size> <perms>", "Change page at <address> with <size>, protection <perms> (rwx)",
 		"dms", " <id> <mapaddr>", "take memory snapshot",
 		"dms-", " <id> <mapaddr>", "restore memory snapshot",
@@ -703,6 +752,9 @@ static int cmd_debug_map(RCore *core, const char *input) {
 				break;
 			}
 		}
+		break;
+	case 'm': // "dmm"
+		cmd_debug_modules (core, input[1]);
 		break;
 	case '?':
 		r_core_cmd_help (core, help_msg);
@@ -786,17 +838,16 @@ static int cmd_debug_map(RCore *core, const char *input) {
 		}
 		r_debug_map_sync (core->dbg); // update process memory maps
 		r_list_foreach (core->dbg->maps, iter, map) {
-			if (core->bin && core->bin->cur && core->bin->cur->o && \
-					((addr != -1 && (addr >= map->addr && addr < map->addr_end)) ||
-					(libname != NULL && (strstr (map->name, libname))))) {
-				RBinObject *o = core->bin->cur->o;
+			if (core->bin &&
+				((addr != -1 && (addr >= map->addr && addr < map->addr_end)) ||
+				(libname != NULL && (strstr (map->name, libname))))) {
 				filter.offset = 0LL;
 				filter.name = (char *)symname;
-				baddr = o->baddr;
-				o->baddr = map->addr;
+				baddr = r_bin_get_baddr (core->bin);
+				r_bin_set_baddr (core->bin, map->addr);
 				r_core_bin_info (core, R_CORE_BIN_ACC_SYMBOLS, (input[1]=='*'),
 						R_TRUE, &filter, 0, NULL);
-				o->baddr = baddr;
+				r_bin_set_baddr (core->bin, baddr);
 				break;
 			}
 		}
@@ -1204,19 +1255,24 @@ free (rf);
 			size = atoi (regname);
 			if (size<1) {
 				char *arg = strchr (str+2, ' ');
+				size = -1;
 				if (arg) {
 					*arg++ = 0;
 					size = atoi (arg);
-					type = r_reg_type_by_name (str+2);
-
 				}
-				if (size<0)
-					size = 0;
-			}
-			if (type != R_REG_TYPE_LAST) {
+				type = r_reg_type_by_name (str+2);
+				if (size < 0)
+					size = core->dbg->bits * 8;
 				r_debug_reg_sync (core->dbg, type, R_FALSE);
-				r_debug_reg_list (core->dbg, type, size, (int)(size_t)strchr (str,'*'), use_color);
-			} else eprintf ("cmd_debug_reg: Unknown type\n");
+				r_debug_reg_list (core->dbg, type, size,
+					strchr (str,'*')? 1: 0, use_color);
+			} else {
+				if (type != R_REG_TYPE_LAST) {
+					r_debug_reg_sync (core->dbg, type, R_FALSE);
+					r_debug_reg_list (core->dbg, type, size,
+						strchr (str,'*')?1:0, use_color);
+				} else eprintf ("cmd_debug_reg: Unknown type\n");
+			}
 			} break;
 		default:
 			for (i=0; (name = r_reg_get_type (i)); i++)
@@ -2512,6 +2568,7 @@ static int cmd_debug(void *data, const char *input) {
 			break;
 		case 's':
 			// r_debug_desc_seek()
+			// TODO: handle read, readwrite, append
 			break;
 		case 'd':
 			// r_debug_desc_dup()
@@ -2522,10 +2579,11 @@ static int cmd_debug(void *data, const char *input) {
 		case 'w':
 			// r_debug_desc_write()
 			break;
-		case '-':
+		case '-': // "dd-"
 			// close file
 			//r_core_syscallf (core, "close", "%d", atoi (input+2));
-			r_core_cmdf (core, "dis close %d", atoi (input+2));
+			r_core_cmdf (core, "dxs close %d", (int)r_num_math (
+				core->num, input+2));
 			// TODO: run
 			break;
 		case ' ':
@@ -2665,7 +2723,12 @@ static int cmd_debug(void *data, const char *input) {
 			break;
 		case 's':
 			if (input[2]) {
-				r_core_cmdf (core, "dxr `gs %s`", input+2);
+				r_cons_push ();
+				char * str = r_core_cmd_str (core,
+					sdb_fmt (0, "gs %s", input+2));
+				r_cons_pop ();
+				r_core_cmdf (core, "dx %s", str); //`gs %s`", input+2);
+				free (str);
 			} else {
 				eprintf ("Missing parameter used in gs by dxs\n");
 			}
@@ -2704,7 +2767,7 @@ static int cmd_debug(void *data, const char *input) {
 			"dxs", " write 1, 0x8048, 12", "Syscall injection (see gs)",
 			"\nExamples:", "", "",
 			"dx", " 9090", "Inject two x86 nop",
-			"\"dia mov eax,6;mov ebx,0;int 0x80\"", "", "Inject and restore state",
+			"\"dxa mov eax,6;mov ebx,0;int 0x80\"", "", "Inject and restore state",
 			NULL};
 			r_core_cmd_help (core, help_msg);
 			}

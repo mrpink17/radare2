@@ -363,7 +363,7 @@ static int cmd_open(void *data, const char *input) {
 	case 'o':
 		switch (input[1]) {
 		case 'd': // "ood" : reopen in debugger
-			if (core && core->file && core->file->desc && core->file->desc->uri) {
+			if (core->file && core->file->desc && core->file->desc->uri) {
 				int bits = core->assembler->bits;
 				const char *oldname = core->file->desc->uri;
 				char *newfile = r_str_newf ("dbg://%s", oldname);
@@ -408,7 +408,7 @@ static int cmd_open(void *data, const char *input) {
 			if (!r_core_file_open (core, input+2, R_IO_READ, 0))
 				eprintf ("Cannot open file\n");
 			if (!r_core_bin_load (core, NULL, baddr))
-				r_config_set (core->config, "io.va", "false");
+				r_config_set_i (core->config, "io.va", R_FALSE);
 		} else {
 			eprintf ("Missing argument\n");
 		}

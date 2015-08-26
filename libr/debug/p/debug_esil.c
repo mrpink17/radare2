@@ -1,9 +1,10 @@
-/* radare - LGPL - Copyright 2013 pancake <pancake@nopcode.org> */
+/* radare - LGPL - Copyright 2013-2015 pancake */
 // r2 -Desil ls
 
 #include <r_asm.h>
 #include <r_debug.h>
 
+#if 0
 static int is_io_esil(RDebug *dbg) {
 	RIODesc *d = dbg->iob.io->desc;
 	if (d && d->plugin && d->plugin->name)
@@ -11,6 +12,7 @@ static int is_io_esil(RDebug *dbg) {
 			return R_TRUE;
 	return R_FALSE;
 }
+#endif
 
 static int __esil_step_over(RDebug *dbg) {
 	eprintf ("TODO: ESIL STEP OVER\n");
@@ -85,21 +87,28 @@ static int __esil_detach(int pid) {
 
 static char *__esil_reg_profile(RDebug *dbg) {
 	eprintf ("TODO: esil %s\n", r_sys_arch_str (dbg->arch));
-	return strdup (
-	"=pc	pc\n"
-	"=sp	esp\n"
-	"=bp	ptr\n"
-	"gpr	rax	.32	0	0\n"
-	"gpr	pc	.32	0	0\n"
-	"gpr	ptr	.32	4	0\n"
-	"gpr	esp	.32	8	0\n"
-	"gpr	scr	.32	12	0\n"
-	"gpr	scri	.32	16	0\n"
-	"gpr	inp	.32	20	0\n"
-	"gpr	inpi	.32	24	0\n"
-	"gpr	mem	.32	28	0\n"
-	"gpr	memi	.32	32	0\n"
-	);
+	if (dbg->arch == R_SYS_ARCH_BF) {
+		return strdup (
+			"=pc	pc\n"
+			"=sp	esp\n"
+			"=bp	ptr\n"
+			"gpr	rax	.32	0	0\n"
+			"gpr	pc	.32	0	0\n"
+			"gpr	ptr	.32	4	0\n"
+			"gpr	esp	.32	8	0\n"
+			"gpr	scr	.32	12	0\n"
+			"gpr	scri	.32	16	0\n"
+			"gpr	inp	.32	20	0\n"
+			"gpr	inpi	.32	24	0\n"
+			"gpr	mem	.32	28	0\n"
+			"gpr	memi	.32	32	0\n"
+		      );
+	} else if (dbg->arch == R_SYS_ARCH_X86) {
+		eprintf ("[DEBUGESIL] Missing regprofile for x86\n");
+		return NULL;
+	} else {
+		return NULL;
+	}
 }
 
 static int __esil_breakpoint (RBreakpointItem *bp, int set, void *user) {
@@ -121,6 +130,7 @@ RDebugPlugin r_debug_plugin_esil = {
 	.name = "esil",
 	.license = "LGPL3",
 	/* TODO: Add support for more architectures here */
+	.keepio = 1,
 	.arch = R_ASM_ARCH_BF,
 	.bits = R_SYS_BITS_32 | R_SYS_BITS_64,
 	.init = __esil_init,

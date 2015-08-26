@@ -281,13 +281,11 @@ R_API int r_core_bin_reload(RCore *r, const char *file, ut64 baseaddr) {
 }
 
 // XXX - need to handle index selection during debugging
-static int r_core_file_do_load_for_debug (RCore *r, ut64 loadaddr, const char *filenameuri) {
+static int r_core_file_do_load_for_debug (RCore *r, ut64 baseaddr, const char *filenameuri) {
 	RCoreFile *cf = r_core_file_cur (r);
 	RIODesc *desc = cf ? cf->desc : NULL;
 	RBinFile *binfile = NULL;
 	RBinPlugin *plugin;
-	ut64 baseaddr = 0;
-	//int va = r->io->va || r->io->debug;
 	int xtr_idx = 0; // if 0, load all if xtr is used
 	int treat_as_rawstr = R_FALSE;
 
@@ -296,13 +294,10 @@ static int r_core_file_do_load_for_debug (RCore *r, ut64 loadaddr, const char *f
 		int newpid = desc->fd;
 		r_debug_select (r->dbg, newpid, newpid);
 	}
-#if __linux__
-	baseaddr = loadaddr;
-#else
+#if !__linux__
 	baseaddr = get_base_from_maps (r, filenameuri);
 	if (baseaddr != UT64_MAX) {
-		// eprintf ("LOADING AT 0x%08llx\n", baseaddr);
-		r_config_set_i (r->config, "bin.laddr", baseaddr);
+		r_config_set_i (r->config, "bin.baddr", baseaddr);
 	}
 #endif
 	// HACK if its a relative path, load from disk instead of memory
@@ -311,11 +306,11 @@ static int r_core_file_do_load_for_debug (RCore *r, ut64 loadaddr, const char *f
 #else
 	int fd = desc->fd;
 #endif
-	if (!r_bin_load (r->bin, filenameuri, baseaddr, loadaddr, xtr_idx, fd, treat_as_rawstr)) {
+	if (!r_bin_load (r->bin, filenameuri, baseaddr, UT64_MAX, xtr_idx, fd, treat_as_rawstr)) {
 		eprintf ("Cannot open %s\n", filenameuri);
 		if (r_config_get_i (r->config, "bin.rawstr")) {
 			treat_as_rawstr = R_TRUE;
-			if (!r_bin_load (r->bin, filenameuri, baseaddr, loadaddr, xtr_idx, desc->fd, treat_as_rawstr)) {
+			if (!r_bin_load (r->bin, filenameuri, baseaddr, UT64_MAX, xtr_idx, desc->fd, treat_as_rawstr)) {
 				return R_FALSE;
 			}
 		}
@@ -326,7 +321,7 @@ static int r_core_file_do_load_for_debug (RCore *r, ut64 loadaddr, const char *f
 	plugin = r_bin_file_cur_plugin (binfile);
 	if ( plugin && strncmp (plugin->name, "any", 5)==0 ) {
 		// set use of raw strings
-		r_config_set_i (r->config, "io.va", 0);
+		r_config_set_i (r->config, "io.va", R_FALSE);
 		//\\ r_config_set (r->config, "bin.rawstr", "true");
 		// get bin.minstr
 		r->bin->minstrlen = r_config_get_i (r->config, "bin.minstr");
@@ -364,7 +359,7 @@ static int r_core_file_do_load_for_io_plugin (RCore *r, ut64 baseaddr, ut64 load
 	plugin = r_bin_file_cur_plugin (binfile);
 	if ( plugin && strncmp (plugin->name, "any", 5)==0 ) {
 		// set use of raw strings
-		r_config_set_i (r->config, "io.va", 0);
+		r_config_set_i (r->config, "io.va", R_FALSE);
 		// r_config_set (r->config, "bin.rawstr", "true");
 		// get bin.minstr
 		r->bin->minstrlen = r_config_get_i (r->config, "bin.minstr");
@@ -375,7 +370,7 @@ static int r_core_file_do_load_for_io_plugin (RCore *r, ut64 baseaddr, ut64 load
 			r_core_bin_set_arch_bits (r, binfile->file,
 				info->arch, info->bits);
 		} else {
-			r_config_set_i (r->config, "io.va", 0);
+			r_config_set_i (r->config, "io.va", R_FALSE);
 		}
 	}
 
@@ -388,68 +383,8 @@ static int r_core_file_do_load_for_io_plugin (RCore *r, ut64 baseaddr, ut64 load
 	return R_TRUE;
 }
 
-#if 0
-// XXX - remove this code after June 2014, because current code setup is sufficient
-static int r_core_file_do_load_for_hex (RCore *r, ut64 baddr, ut64 loadaddr, const char *filenameuri) {
-	// HEXEDITOR
-	RBinFile * binfile = NULL;
-	ut64 fd = r_core_file_cur_fd (r);
-	int i = 0;
-	int xtr_idx = 0; // if 0, load all if xtr is used
-	int treat_as_rawstr = R_FALSE;
-
-	if (!r_bin_load (r->bin, filenameuri, baddr, loadaddr, xtr_idx, fd, treat_as_rawstr)) {
-		treat_as_rawstr = R_TRUE;
-		if (!r_bin_load (r->bin, filenameuri, baddr, loadaddr, xtr_idx, fd, treat_as_rawstr))
-			return R_FALSE;
-	}
-
-	binfile = r_core_bin_cur (r);
-	if (binfile) {
-		r_core_bin_bind (r, binfile);
-	}
-
-	// binary files should be treated as views into a file
-	// not the actual file
-	/*
-	{
-		RListIter *iter;
-		RIOMap *im;
-
-		r_list_foreach (r->io->maps, iter, im) {
-			if (binfile->size > 0) {
-				im->delta = binfile->offset;
-				im->to = im->from + binfile->size;
-			}
-		}
-	}*/
-
-	if (binfile->narch>1 && r_config_get_i (r->config, "scr.prompt")) {
-		int narch = binfile->narch;
-		eprintf ("NOTE: Fat binary found. Selected sub-bin is: -a %s -b %d\n",
-					r->assembler->cur->arch, r->assembler->bits);
-		eprintf ("NOTE: Use -a and -b to select sub binary in fat binary\n");
-
-		for (i=0; i<narch; i++) {
-			RBinFile *lbinfile = r_bin_file_find_by_name_n (r->bin, binfile->file, i);
-			RBinObject *lbinobj = lbinfile ? lbinfile->o : NULL;
-			if (lbinobj && lbinobj->info) {
-				eprintf ("  $ r2 -a %s -b %d %s  # 0x%08"PFMT64x"\n",
-						lbinobj->info->arch,
-						lbinobj->info->bits,
-						binfile->file,
-						lbinobj->boffset);
-			} else eprintf ("No extract info found.\n");
-		}
-	}
-
-	return R_TRUE;
-}
-#endif
-
 R_API int r_core_bin_load(RCore *r, const char *filenameuri, ut64 baddr) {
 	const char *suppress_warning = r_config_get (r->config, "file.nowarn");
-	ut64 loadaddr = 0;
 	RCoreFile *cf = r_core_file_cur (r);
 	RBinFile *binfile = NULL;
 	RIODesc *desc = cf ? cf->desc : NULL;
@@ -469,10 +404,6 @@ R_API int r_core_bin_load(RCore *r, const char *filenameuri, ut64 baddr) {
 				    filenameuri, cf->desc->name);
 			}
 		}
-		if (cf->map) {
-			//XXX: a file can have more then 1 map
-			loadaddr = cf->map->from;
-		}
 	}
 
 	if (!filenameuri) {
@@ -487,12 +418,9 @@ R_API int r_core_bin_load(RCore *r, const char *filenameuri, ut64 baddr) {
 		// Fix to select pid before trying to load the binary
 		if ( (desc->plugin && desc->plugin->isdbg) \
 				|| r_config_get_i (r->config, "cfg.debug")) {
-			if (!loadaddr) {
-				loadaddr = baddr;
-			}
-			r_core_file_do_load_for_debug (r, loadaddr, filenameuri);
+			r_core_file_do_load_for_debug (r, baddr, filenameuri);
 		} else {
-			r_core_file_do_load_for_io_plugin (r, baddr, loadaddr);
+			r_core_file_do_load_for_io_plugin (r, baddr, 0);
 		}
 		// Restore original desc
 		r_io_use_desc (r->io, desc);
@@ -506,7 +434,7 @@ R_API int r_core_bin_load(RCore *r, const char *filenameuri, ut64 baddr) {
 	if (plugin && plugin->name && !strncmp (plugin->name, "any", 3)) {
 		// set use of raw strings
 		//r_config_set (r->config, "bin.rawstr", "true");
-		r_config_set_i (r->config, "io.va", 0);
+		r_config_set_i (r->config, "io.va", R_FALSE);
 		// get bin.minstr
 		r->bin->minstrlen = r_config_get_i (r->config, "bin.minstr");
 	} else if (binfile) {
@@ -630,7 +558,7 @@ R_API RCoreFile *r_core_file_open_many(RCore *r, const char *file, int flags, ut
 	return top_file;
 }
 
-R_API RCoreFile *r_core_file_open(RCore *r, const char *file, int flags, ut64 loadaddr) {
+R_API RCoreFile *r_core_file_open (RCore *r, const char *file, int flags, ut64 loadaddr) {
 	const char *suppress_warning = r_config_get (r->config, "file.nowarn");
 	const int openmany = r_config_get_i (r->config, "file.openmany");
 	const char *cp;
@@ -904,6 +832,12 @@ R_API int r_core_hash_load(RCore *r, const char *file) {
 	RHash *ctx;
 	ut64 limit;
 	RCoreFile *cf = r_core_file_cur (r);
+	if (!file && cf && cf->desc) {
+		file = cf->desc->name;
+	}
+	if (!file) {
+		return R_FALSE;
+	}
 
 	limit = r_config_get_i (r->config, "cfg.hashlimit");
 	if (r_io_desc_size (r->io, cf->desc) > limit)

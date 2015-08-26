@@ -29,7 +29,6 @@ static int r_debug_native_reg_write (RDebug *dbg, int type, const ut8* buf, int 
 # include <signal.h>
 #endif
 
-
 #if __WINDOWS__
 #include <windows.h>
 #define R_DEBUG_REG_T CONTEXT
@@ -46,6 +45,8 @@ static int r_debug_native_reg_write (RDebug *dbg, int type, const ut8* buf, int 
 #endif
 
 #elif __APPLE__
+#include <sys/resource.h>
+#include <libproc.h>
 #include "native/xnu/xnu_debug.h"
 
 #elif __sun
@@ -96,7 +97,6 @@ static const char *r_debug_native_reg_profile (RDebug *dbg) {
 #endif
 
 static int r_debug_native_step (RDebug *dbg) {
-	int ret = R_FALSE;
 #if __WINDOWS__ && !__CYGWIN__
 	/* set TRAP flag */
 	CONTEXT regs __attribute__ ((aligned (16)));
@@ -107,33 +107,33 @@ static int r_debug_native_step (RDebug *dbg) {
 		(ut8 *)&regs, sizeof (regs));
 	r_debug_native_continue (dbg, dbg->pid,
 		dbg->tid, dbg->reason.signum);
-	ret = R_TRUE;
 	r_debug_handle_signals (dbg);
+	return R_TRUE;
 #elif __APPLE__
 	return xnu_step (dbg);
 #elif __BSD__
-	ret = ptrace (PT_STEP, dbg->pid, (caddr_t)1, 0);
+	int ret = ptrace (PT_STEP, dbg->pid, (caddr_t)1, 0);
 	if (ret != 0) {
 		perror ("native-singlestep");
-		ret = R_FALSE;
-	} else ret = R_TRUE;
+		return R_FALSE;
+	}
+	return R_TRUE;
 #elif __CYGWIN__
 	#warning "r_debug_native_step not supported on this platform"
-	ret = R_FALSE;
+	return R_FALSE;
 #else // linux
 	return linux_step (dbg);
 #endif
-	return ret;
 }
 
 // return thread id
 static int r_debug_native_attach (RDebug *dbg, int pid) {
-	int ret = -1;
-	if (pid == dbg->pid)
+	if (!dbg || pid == dbg->pid)
 		return pid;
 #if __linux__
 	return linux_attach (dbg, pid);
 #elif __WINDOWS__ && !__CYGWIN__
+	int ret;
 	HANDLE process = w32_open_process (PROCESS_ALL_ACCESS, FALSE, pid);
 	if (process != (HANDLE)NULL && DebugActiveProcess (pid)) {
 		ret = w32_first_thread (pid);
@@ -142,20 +142,22 @@ static int r_debug_native_attach (RDebug *dbg, int pid) {
 	}
 	ret = w32_first_thread (pid);
 	CloseHandle (process);
+	return ret;
 #elif __CYGWIN__
 	#warning "r_debug_native_attach not supported on this platform"
-	ret = -1;
+	return -1;
 #elif __APPLE__
 	return xnu_attach (dbg, pid);
 #elif __KFBSD__
 	if (ptrace (PT_ATTACH, pid, 0, 0) != -1) perror ("ptrace (PT_ATTACH)");
 	return pid;
 #else
-	ret = ptrace (PTRACE_ATTACH, pid, 0, 0);
-	if (ret!=-1) perror ("ptrace (PT_ATTACH)");
-	ret = pid;
+	int ret = ptrace (PTRACE_ATTACH, pid, 0, 0);
+	if (ret != -1) {
+		perror ("ptrace (PT_ATTACH)");
+	}
+	return pid;
 #endif
-	return ret;
 }
 
 static int r_debug_native_detach (int pid) {
@@ -249,7 +251,7 @@ static int r_debug_native_wait (RDebug *dbg, int pid) {
 }
 
 #undef MAXPID
-#define MAXPID 69999
+#define MAXPID 99999
 
 static RList *r_debug_native_tids (int pid) {
 	printf ("TODO: Threads: \n");
@@ -379,11 +381,10 @@ static RList *r_debug_native_threads (RDebug *dbg, int pid) {
 	return linux_thread_list (pid, list);
 #else
 	eprintf ("TODO: list threads\n");
+	r_list_free (list);
+	return NULL;
 #endif
-	return list;
 }
-
-
 
 #if __WINDOWS__ && !__CYGWIN__
 static int windows_reg_read (RDebug *dbg, int type, ut8 *buf, int size) {
@@ -514,7 +515,7 @@ static int r_debug_native_reg_read (RDebug *dbg, int type, ut8 *buf, int size) {
 	return windows_reg_read (dbg, type, buf, size);
 #elif __APPLE__
 	return xnu_reg_read (dbg, type, buf, size);
-#elif __linux__ 
+#elif __linux__
 	return linux_reg_read (dbg, type, buf, size);
 #elif __sun || __NetBSD__ || __KFBSD__ || __OpenBSD__
 	return bsd_reg_read (dbg, type, buf, size);
@@ -601,7 +602,7 @@ static RList *r_debug_native_sysctl_map (RDebug *dbg) {
 	mib[2] = KERN_PROC_VMMAP;
 	mib[3] = dbg->pid;
 
-	if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0) return NULL;
+	if (sysctl (mib, 4, NULL, &len, NULL, 0) != 0) return NULL;
 	len = len * 4 / 3;
 	buf = malloc(len);
 	if (buf == NULL) return (NULL);
@@ -611,11 +612,15 @@ static RList *r_debug_native_sysctl_map (RDebug *dbg) {
 	}
 	bp = buf;
 	eb = buf + len;
-	list = r_list_new ();
+	list = r_debug_map_list_new();
+	if (!list) {
+		free (buf);
+		return NULL;
+	}
 	while (bp < eb) {
 		kve = (struct kinfo_vmentry *)(uintptr_t)bp;
 		map = r_debug_map_new (kve->kve_path, kve->kve_start,
-				kve->kve_end, kve->kve_protection, 0);
+					kve->kve_end, kve->kve_protection, 0);
 		if (map == NULL) break;
 		r_list_append (list, map);
 		bp += kve->kve_structsize;
@@ -638,7 +643,7 @@ static RDebugMap* r_debug_native_map_alloc (RDebug *dbg, ut64 addr, int size) {
 	if (process == INVALID_HANDLE_VALUE) {
 		return map;
 	}
-	base = VirtualAllocEx (process, (LPVOID)(size_t)addr, 
+	base = VirtualAllocEx (process, (LPVOID)(size_t)addr,
 	  			(SIZE_T)size, MEM_COMMIT, PAGE_READWRITE);
 	CloseHandle (process);
 	if (!base) {
@@ -665,7 +670,7 @@ static int r_debug_native_map_dealloc (RDebug *dbg, ut64 addr, int size) {
 		return R_FALSE;
 	}
 	int ret = R_TRUE;
-	if (!VirtualFreeEx (process, (LPVOID)(size_t)addr, 
+	if (!VirtualFreeEx (process, (LPVOID)(size_t)addr,
 			  (SIZE_T)size, MEM_DECOMMIT)) {
 		eprintf ("Failed to free memory\n");
 		ret = R_FALSE;
@@ -678,6 +683,13 @@ static int r_debug_native_map_dealloc (RDebug *dbg, ut64 addr, int size) {
 #endif
 }
 
+static void _map_free(RDebugMap *map) {
+	if (!map) return;
+	free (map->name);
+	free (map->file);
+	free (map);
+}
+
 static RList *r_debug_native_map_get (RDebug *dbg) {
 	RList *list = NULL;
 #if __KFBSD__
@@ -685,7 +697,7 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 	char unkstr[128];
 #endif
 #if __APPLE__
-	list = xnu_dbg_maps (dbg);
+	list = xnu_dbg_maps (dbg, 0);
 #elif __WINDOWS__ && !__CYGWIN__
 	list = w32_dbg_maps (dbg); // TODO: moar?
 #else
@@ -718,8 +730,12 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 		return NULL;
 	}
 
-	list = r_list_new ();
-	if (!list) return NULL;
+	list = r_list_new();
+	if (!list) {
+		fclose (fd);
+		return NULL;
+	}
+	list->free = (RListFree)_map_free;
 	while (!feof (fd)) {
 		line[0] = '\0';
 		fgets (line, sizeof(line) - 1, fd);
@@ -759,40 +775,72 @@ static RList *r_debug_native_map_get (RDebug *dbg) {
 			}
 
 		map = r_debug_map_new (path,
-			r_num_get (NULL, region),
-			r_num_get (NULL, region2),
-			perm, 0);
+					r_num_get (NULL, region),
+					r_num_get (NULL, region2),
+					perm, 0);
 		if (map == NULL) break;
-#if 0
-		mr->ini = get_offset(region);
-		mr->end = get_offset(region2);
-		mr->size = mr->end - mr->ini;
-		mr->bin = strdup(path);
-		mr->perms = 0;
-		if(!strcmp(path, "[stack]") || !strcmp(path, "[vdso]"))
-			mr->flags = FLAG_NOPERM;
-		else
-			mr->flags = 0;
-
-		for(i = 0; perms[i] && i < 4; i++) {
-			switch(perms[i]) {
-				case 'r':
-					mr->perms |= REGION_READ;
-					break;
-				case 'w':
-					mr->perms |= REGION_WRITE;
-					break;
-				case 'x':
-					mr->perms |= REGION_EXEC;
-			}
-		}
-#endif
+		map->file = strdup (path);
 		r_list_append (list, map);
 	}
 	fclose (fd);
 #endif // __sun
 #endif // __WINDOWS
 	return list;
+}
+
+static RList *r_debug_native_modules_get (RDebug *dbg) {
+	char *lastname = NULL;
+	RDebugMap *map;
+	RListIter *iter, *iter2;
+	RList *list, *last;
+	int must_delete;
+#if __APPLE__
+	list = xnu_dbg_maps (dbg, 1);
+	if (list && !r_list_empty (list)) {
+		return list;
+	}
+#endif
+#if __WINDOWS__
+	list = w32_dbg_modules (dbg);
+	if (list && !r_list_empty (list)) {
+		return list;
+	}
+#endif
+	list = r_debug_native_map_get (dbg);
+	if (!list) {
+		return NULL;
+	}
+	last = r_list_new ();
+	last->free = (RListFree)r_debug_map_free;
+	r_list_foreach_safe (list, iter, iter2, map) {
+		const char *file = map->file;
+		if (!map->file) {
+			file = map->file = strdup (map->name);
+		}
+		must_delete = 1;
+		if (file && *file) {
+			if (file[0] == '/') {
+				if (lastname) {
+					if (strcmp (lastname, file)) {
+						must_delete = 0;
+					}
+				} else {
+					must_delete = 0;
+				}
+			}
+		}
+		if (must_delete) {
+			r_list_delete (list, iter);
+		} else {
+			r_list_append (last, map);
+			free (lastname);
+			lastname = strdup (file);
+		}
+	}
+	list->free = NULL;
+	free (lastname);
+	r_list_free (list);
+	return last;
 }
 
 // TODO: deprecate???
@@ -950,11 +998,139 @@ static void addr_to_string (struct sockaddr_storage *ss, char *buffer, int bufle
 }
 #endif
 
-static RList *r_debug_desc_native_list (int pid) {
+#if __APPLE__
 
-	RList *ret = NULL;
+static int getMaxFiles() {
+	struct rlimit limit;
+	if (getrlimit (RLIMIT_NOFILE, &limit) != 0) {
+		return 1024;
+	}
+	return limit.rlim_cur;
+}
+
+static RList *xnu_desc_list (int pid) {
+#define xwr2rwx(x) ((x&1)<<2) | (x&2) | ((x&4)>>2)
+	RDebugDesc *desc;
+	RList *ret = r_list_new();
+	struct vnode_fdinfowithpath vi;
+	int i, nb, type = 0;
+	int maxfd = getMaxFiles();
+
+	for (i=0 ; i<maxfd; i++) {
+		nb = proc_pidfdinfo (pid, i, PROC_PIDFDVNODEPATHINFO, &vi, sizeof (vi));
+		if (nb<1) {
+			continue;
+		}
+		if (nb < sizeof (vi)) {
+			perror ("too few bytes");
+			break;
+		}
+		//printf ("FD %d RWX %x ", i, vi.pfi.fi_openflags);
+		//printf ("PATH %s\n", vi.pvip.vip_path);
+		desc = r_debug_desc_new (i,
+				vi.pvip.vip_path,
+				xwr2rwx(vi.pfi.fi_openflags),
+				type, 0);
+		r_list_append (ret, desc);
+	}
+	return ret;
+}
+#endif
+#if __WINDOWS__
+static RList *win_desc_list (int pid) {
+	RDebugDesc *desc;
+	RList *ret = r_list_new();
+	int i, nb, type = 0;
+	HANDLE processHandle;
+	PSYSTEM_HANDLE_INFORMATION handleInfo;
+	NTSTATUS status;
+	ULONG handleInfoSize = 0x10000;
+	LPVOID  buff;
+	if (!(processHandle=w32_openprocess(0x0040,FALSE,pid))) {
+		eprintf("win_desc_list: Error opening process.\n");
+		return NULL;
+	}
+	handleInfo = (PSYSTEM_HANDLE_INFORMATION)malloc(handleInfoSize);
+	#define STATUS_INFO_LENGTH_MISMATCH 0xc0000004
+	#define SystemHandleInformation 16
+	while ((status = w32_ntquerysysteminformation(SystemHandleInformation,handleInfo,handleInfoSize,NULL)) == STATUS_INFO_LENGTH_MISMATCH)
+		handleInfo = (PSYSTEM_HANDLE_INFORMATION)realloc(handleInfo, handleInfoSize *= 2);
+	if (status) {
+		eprintf("win_desc_list: NtQuerySystemInformation failed!\n");
+		return NULL;
+	}
+	for (i = 0; i < handleInfo->HandleCount; i++) {
+		SYSTEM_HANDLE handle = handleInfo->Handles[i];
+		HANDLE dupHandle = NULL;
+		POBJECT_TYPE_INFORMATION objectTypeInfo;
+		PVOID objectNameInfo;
+		UNICODE_STRING objectName;
+		ULONG returnLength;
+		if (handle.ProcessId != pid)
+			continue;
+		if (handle.ObjectTypeNumber != 0x1c)
+			continue;
+		if (w32_ntduplicateobject(processHandle, (HANDLE)handle.Handle, GetCurrentProcess(), &dupHandle, 0, 0, 0))
+			continue;
+		objectTypeInfo = (POBJECT_TYPE_INFORMATION)malloc(0x1000);
+		if (w32_ntqueryobject(dupHandle,2,objectTypeInfo,0x1000,NULL)) {
+			CloseHandle(dupHandle);
+			continue;
+		}
+		objectNameInfo = malloc(0x1000);
+		if (w32_ntqueryobject(dupHandle,1,objectNameInfo,0x1000,&returnLength)) {
+			objectNameInfo = realloc(objectNameInfo, returnLength);
+			if (w32_ntqueryobject(dupHandle,1,objectNameInfo,returnLength,NULL)) {
+				free(objectTypeInfo);
+				free(objectNameInfo);
+				CloseHandle(dupHandle);
+				continue;
+			}
+		}
+		objectName = *(PUNICODE_STRING)objectNameInfo;
+		if (objectName.Length) {
+			//objectTypeInfo->Name.Length ,objectTypeInfo->Name.Buffer,objectName.Length / 2,objectName.Buffer
+			buff=malloc((objectName.Length/2)+1);
+			wcstombs(buff,objectName.Buffer,objectName.Length/2);
+			desc = r_debug_desc_new (handle.Handle,
+					buff,
+					0,
+					'?',
+					0);
+			if (!desc) break;
+			r_list_append (ret, desc);
+			free(buff);
+		}
+		else {
+			buff=malloc((objectTypeInfo->Name.Length / 2)+1);
+			wcstombs(buff,objectTypeInfo->Name.Buffer,objectTypeInfo->Name.Length);
+			desc = r_debug_desc_new (handle.Handle,
+					buff,
+					0,
+					'?',
+					0);
+			if (!desc) break;
+			r_list_append (ret, desc);
+			free(buff);
+		}
+		free(objectTypeInfo);
+		free(objectNameInfo);
+		CloseHandle(dupHandle);
+	}
+	free(handleInfo);
+	CloseHandle(processHandle);
+	return ret;
+}
+#endif
+
+static RList *r_debug_desc_native_list (int pid) {
 // TODO: windows
-#if __KFBSD__
+#if __APPLE__
+	return xnu_desc_list (pid);
+#elif __WINDOWS__
+	return win_desc_list(pid);
+#elif __KFBSD__
+	RList *ret = NULL;
 	int perm, type, mib[4];
 	size_t len;
 	char *buf, *bp, *eb, *str, path[1024];
@@ -1026,12 +1202,15 @@ static RList *r_debug_desc_native_list (int pid) {
 		if (desc == NULL) break;
 		r_list_append (ret, desc);
 	}
-	
+
 	free (buf);
+	return ret;
 #elif __linux__
 	return linux_desc_list (pid);
+#else
+#warning list filedescriptors not supported for this platform
+	return NULL;
 #endif
-	return ret;
 }
 
 static int r_debug_native_map_protect (RDebug *dbg, ut64 addr, int size, int perms) {
@@ -1039,7 +1218,7 @@ static int r_debug_native_map_protect (RDebug *dbg, ut64 addr, int size, int per
 	DWORD old;
 	HANDLE process = w32_open_process (PROCESS_ALL_ACCESS, FALSE, dbg->pid);
 	// TODO: align pointers
-	BOOL ret = VirtualProtectEx (WIN32_PI (process), (LPVOID)(UINT)addr, 
+	BOOL ret = VirtualProtectEx (WIN32_PI (process), (LPVOID)(UINT)addr,
 	  			size, perms, &old);
 	CloseHandle (process);
 	return ret;
@@ -1115,6 +1294,7 @@ struct r_debug_plugin_t r_debug_plugin_native = {
 	.map_alloc = r_debug_native_map_alloc,
 	.map_dealloc = r_debug_native_map_dealloc,
 	.map_get = r_debug_native_map_get,
+	.modules_get = r_debug_native_modules_get,
 	.map_protect = r_debug_native_map_protect,
 	.breakpoint = r_debug_native_bp,
 	.drx = r_debug_native_drx,

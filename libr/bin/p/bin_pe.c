@@ -113,7 +113,7 @@ static RList* sections(RBinFile *arch) {
 		ptr->vsize = sections[i].vsize;
 		ptr->paddr = sections[i].paddr;
 		ptr->vaddr = sections[i].vaddr + ba;
-		ptr->srwx = 0;
+		ptr->srwx = R_BIN_SCN_MAP;
 		if (R_BIN_PE_SCN_IS_EXECUTABLE (sections[i].flags))
 			ptr->srwx |= R_BIN_SCN_EXECUTABLE;
 		if (R_BIN_PE_SCN_IS_WRITABLE (sections[i].flags))
@@ -228,7 +228,7 @@ static RList* imports(RBinFile *arch) {
 		rel->additive = 0;
 		rel->import = ptr;
 		rel->addend = 0;
-		rel->vaddr = imports[i].vaddr + baddr (arch);
+		rel->vaddr = imports[i].vaddr;
 		rel->paddr = imports[i].paddr;
 		r_list_append (relocs, rel);
 	}

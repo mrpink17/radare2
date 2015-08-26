@@ -213,6 +213,7 @@ typedef struct r_debug_plugin_t {
 	ut32 bits;
 	ut64 arch;
 	int canstep;
+	int keepio;
 	/* life */
 	RDebugInfo* (*info)(RDebug *dbg, const char *arg);
 	int (*startv)(int argc, char **argv);
@@ -240,6 +241,7 @@ typedef struct r_debug_plugin_t {
 	char* (*reg_profile)(RDebug *dbg);
 	/* memory */
 	RList *(*map_get)(RDebug *dbg);
+	RList *(*modules_get)(RDebug *dbg);
 	RDebugMap* (*map_alloc)(RDebug *dbg, ut64 addr, int size);
 	int (*map_dealloc)(RDebug *dbg, ut64 addr, int size);
 	int (*map_protect)(RDebug *dbg, ut64 addr, int size, int perms);
@@ -342,10 +344,10 @@ R_API int r_debug_plugin_list(RDebug *dbg);
 R_API int r_debug_plugin_add(RDebug *dbg, RDebugPlugin *foo);
 
 /* memory */
+R_API RList *r_debug_modules_list(RDebug*);
 R_API RDebugMap *r_debug_map_alloc(RDebug *dbg, ut64 addr, int size);
 R_API int r_debug_map_dealloc(RDebug *dbg, RDebugMap *map);
 R_API RList *r_debug_map_list_new(void);
-R_API void r_debug_map_list_free(RList *maps);
 R_API RDebugMap *r_debug_map_get(RDebug *dbg, ut64 addr);
 R_API RDebugMap *r_debug_map_new (char *name, ut64 addr, ut64 addr_end, int perm, int user);
 R_API void r_debug_map_free(RDebugMap *map);

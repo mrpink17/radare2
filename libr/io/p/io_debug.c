@@ -263,8 +263,6 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 			//	r_str_argv_free (argv);
 			exit (1);
 		} else {
-			// TODO: Add support to redirect filedescriptors
-			// TODO: Configure process environment
 			char *_cmd = strdup (cmd);
 			argv = r_str_argv (_cmd, NULL);
 			if (!argv) {
@@ -274,6 +272,7 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 #if __APPLE__
 			 {
 #define _POSIX_SPAWN_DISABLE_ASLR 0x0100
+				posix_spawn_file_actions_t fileActions;
 				ut32 ps_flags = POSIX_SPAWN_SETEXEC;
 				posix_spawnattr_t attr = {0};
 				size_t copied = 1;
@@ -289,6 +288,14 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 						ps_flags |= _POSIX_SPAWN_DISABLE_ASLR;
 					}
 				}
+				// ps_flags |= POSIX_SPAWN_START_SUSPENDED;
+
+				posix_spawn_file_actions_init (&fileActions);
+				posix_spawn_file_actions_addinherit_np (&fileActions, STDIN_FILENO);
+				posix_spawn_file_actions_addinherit_np (&fileActions, STDOUT_FILENO);
+				posix_spawn_file_actions_addinherit_np (&fileActions, STDERR_FILENO);
+				ps_flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+
 				(void)posix_spawnattr_setflags (&attr, ps_flags);
 #if __i386__ || __x86_64__
 				cpu = CPU_TYPE_I386;
@@ -298,7 +305,7 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 				cpu = CPU_TYPE_ANY;
 #endif
 				posix_spawnattr_setbinpref_np (&attr, 1, &cpu, &copied);
-				ret = posix_spawnp (&p, argv[0], NULL, &attr, argv, NULL);
+				ret = posix_spawnp (&p, argv[0], &fileActions, &attr, argv, NULL);
 				switch (ret) {
 				case 0:
 					eprintf ("Success\n");
@@ -314,6 +321,8 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 					perror ("posix_spawnp");
 					break;
 				}
+				posix_spawn_file_actions_destroy (&fileActions);
+
 				/* only required if no SETEXEC called
 				   if (p != -1)
 				   wait (p);
@@ -322,6 +331,10 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 			 }
 #else
 			 if (argv && *argv) {
+				int i;
+				for (i=3; i<1024; i++) {
+					(void)close (i);
+				}
 				 execvp (argv[0], argv);
 			 } else {
 				 eprintf ("Invalid execvp\n");
@@ -341,7 +354,7 @@ static int fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 				return -1;
 			if (ret != pid)
 				eprintf ("Wait event received by different pid %d\n", ret);
-		} while (ret!=pid);
+		} while (ret != pid);
 		if (WIFSTOPPED (status))
 			eprintf ("Process with PID %d started...\n", (int)pid);
 		if (WEXITSTATUS (status) == MAGIC_EXIT)

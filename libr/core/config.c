@@ -425,15 +425,20 @@ static int cb_timezone(void *user, void *data) {
 }
 
 static int cb_cfgdebug(void *user, void *data) {
+	int ioraw = 1;
 	RCore *core = (RCore*) user;
 	RConfigNode *node = (RConfigNode*) data;
 	if (!core) return R_FALSE;
-	if (core->io)
+	if (core->io) {
 		core->io->debug = node->i_value;
+	}
 	if (core->dbg && node->i_value) {
 		const char *dbgbackend = r_config_get (core->config, "dbg.backend");
 		core->bin->is_debugger = R_TRUE;
 		r_debug_use (core->dbg, dbgbackend);
+		if (!strcmp (r_config_get (core->config, "cmd.prompt"), "")) {
+			r_config_set (core->config, "cmd.prompt", ".dr*");
+		}
 		if (!strcmp (dbgbackend, "bf"))
 			r_config_set (core->config, "asm.arch", "bf");
 		if (core->file) {
@@ -444,7 +449,14 @@ static int cb_cfgdebug(void *user, void *data) {
 		if (core->dbg) r_debug_use (core->dbg, NULL);
 		core->bin->is_debugger = R_FALSE;
 	}
-	r_config_set (core->config, "io.raw", "true");
+	if (core->io) {
+		if (core->dbg && core->dbg->h) {
+			ioraw = core->dbg->h->keepio? 0: 1;
+		} else {
+			ioraw = 0;
+		}
+	}
+	r_config_set (core->config, "io.raw", ioraw? "true": "false");
 	return R_TRUE;
 }
 
@@ -1081,6 +1093,7 @@ R_API int r_core_config_init(RCore *core) {
 	SETI("asm.cmtcol", 70, "Align comments at column 60");
 	SETPREF("asm.calls", "true", "Show calling convention calls as comments in disasm");
 	SETPREF("asm.comments", "true", "Show comments in disassembly view");
+	SETPREF("asm.slow", "true", "Perform slow analysis operations in disasm");
 	SETPREF("asm.decode", "false", "Use code analysis as a disassembler");
 	SETPREF("asm.indent", "false", "Indent disassembly based on reflines depth");
 	SETI("asm.indentspace", 2, "How many spaces to indent the code");
